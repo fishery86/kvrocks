@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ */
+
 #pragma once
 
 #define __STDC_FORMAT_MACROS
@@ -23,6 +43,8 @@ extern "C" {
 #include "worker.h"
 #include "rw_lock.h"
 #include "cluster.h"
+#include "slot_migrate.h"
+#include "slot_import.h"
 
 struct DBScanInfo {
   time_t last_scan_time = 0;
@@ -109,6 +131,7 @@ class Server {
   ReplState GetReplicationState();
 
   void PrepareRestoreDB();
+  void WaitNoMigrateProcessing();
   Status AsyncCompactDB(const std::string &begin_key = "", const std::string &end_key = "");
   Status AsyncBgsaveDB();
   Status AsyncPurgeOldBackups(uint32_t num_backups_to_keep, uint32_t backup_max_keep_hours);
@@ -151,6 +174,8 @@ class Server {
   Engine::Storage *storage_;
   Cluster *cluster_;
   static std::atomic<int> unix_time_;
+  class SlotMigrate *slot_migrate_ = nullptr;
+  class SlotImport *slot_import_ = nullptr;
 
  private:
   void cron();

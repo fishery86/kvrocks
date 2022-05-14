@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ */
+
 #include "storage.h"
 
 #include <fcntl.h>
@@ -84,7 +104,7 @@ void Storage::InitTableOptions(rocksdb::BlockBasedTableOptions *table_options) {
 void Storage::SetBlobDB(rocksdb::ColumnFamilyOptions *cf_options) {
   cf_options->enable_blob_files = config_->RocksDB.enable_blob_files;
   cf_options->min_blob_size = config_->RocksDB.min_blob_size;
-  cf_options->blob_file_size = config_->RocksDB.blob_file_size;
+  cf_options->blob_file_size = config_->RocksDB.blob_file_size * MiB;
   cf_options->blob_compression_type = static_cast<rocksdb::CompressionType>(config_->RocksDB.compression);
   cf_options->enable_blob_garbage_collection = config_->RocksDB.enable_blob_garbage_collection;
   // Use 100.0 to force converting blob_garbage_collection_age_cutoff to double
@@ -141,6 +161,9 @@ void Storage::InitOptions(rocksdb::Options *options) {
   options->level0_slowdown_writes_trigger = config_->RocksDB.level0_slowdown_writes_trigger;
   options->level0_stop_writes_trigger = config_->RocksDB.level0_stop_writes_trigger;
   options->level0_file_num_compaction_trigger = config_->RocksDB.level0_file_num_compaction_trigger;
+  options->max_bytes_for_level_base = config_->RocksDB.max_bytes_for_level_base * MiB;
+  options->max_bytes_for_level_multiplier = config_->RocksDB.max_bytes_for_level_multiplier;
+  options->level_compaction_dynamic_level_bytes = config_->RocksDB.level_compaction_dynamic_level_bytes;
 }
 
 Status Storage::SetColumnFamilyOption(const std::string &key, const std::string &value) {
@@ -549,7 +572,7 @@ uint64_t Storage::GetTotalSize(const std::string &ns) {
         cf_handle == GetCFHandle(kPropagateColumnFamilyName)) {
       continue;
     }
-    auto s = db.FindKeyRangeWithPrefix(prefix, &begin_key, &end_key, cf_handle);
+    auto s = db.FindKeyRangeWithPrefix(prefix,  std::string(), &begin_key, &end_key, cf_handle);
     if (!s.ok()) continue;
 
     rocksdb::Range r(begin_key, end_key);

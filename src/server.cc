@@ -1,3 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ *
+ */
+
 #include "server.h"
 
 #include <fcntl.h>
@@ -35,6 +55,17 @@ Server::Server(Engine::Storage *storage, Config *config) :
 
   for (int i = 0; i < config->workers; i++) {
     auto worker = new Worker(this, config);
+    // multiple workers can't listen to the same unix socket, so
+    // listen unix socket only from a single worker - the first one
+    if (!config->unixsocket.empty() && i == 0) {
+      Status s = worker->ListenUnixSocket(config->unixsocket, config->unixsocketperm, config->backlog);
+      if (!s.IsOK()) {
+        LOG(ERROR) << "[server] Failed to listen on unix socket: "<< config->unixsocket
+                   << ", encounter error: " << s.Msg();
+        delete worker;
+        exit(1);
+      }
+    }
     worker_threads_.emplace_back(new WorkerThread(worker));
   }
   AdjustOpenFilesLimit();
@@ -73,6 +104,20 @@ Status Server::Start() {
     Status s = AddMaster(config_->master_host, static_cast<uint32_t>(config_->master_port), false);
     if (!s.IsOK()) return s;
   }
+
+  if (config_->cluster_enabled) {
+    // Create objects used for slot migration
+    slot_migrate_ = new SlotMigrate(this, config_->migrate_speed,
+                                    config_->pipeline_size, config_->sequence_gap);
+    slot_import_ = new SlotImport(this);
+    // Create migrating thread
+    auto s = slot_migrate_->CreateMigrateHandleThread();
+    if (!s.IsOK()) {
+      LOG(ERROR) << "Failed to create migration thread, Err: " << s.Msg();
+      return Status(Status::NotOK);
+    }
+  }
+
   for (const auto worker : worker_threads_) {
     worker->Start();
   }
@@ -86,7 +131,7 @@ Status Server::Start() {
   compaction_checker_thread_ = std::thread([this]() {
     uint64_t counter = 0;
     int32_t last_compact_date = 0;
-    Util::ThreadSetName("compaction-checker");
+    Util::ThreadSetName("compact-check");
     CompactionChecker compaction_checker(this->storage_);
     while (!stop_) {
       // Sleep first
@@ -164,7 +209,7 @@ Status Server::AddMaster(std::string host, uint32_t port, bool force_reconnect) 
   uint32_t master_listen_port = port;
   if (GetConfig()->master_use_repl_port)  master_listen_port += 1;
   replication_thread_ = std::unique_ptr<ReplicationThread>(
-      new ReplicationThread(host, master_listen_port, this, config_->masterauth));
+      new ReplicationThread(host, master_listen_port, this));
   auto s = replication_thread_->Start(
       [this]() {
         PrepareRestoreDB();
@@ -976,6 +1021,11 @@ void Server::PrepareRestoreDB() {
   task_runner_.Join();
   task_runner_.Purge();
 
+  // If the DB is retored, the object 'db_' will be destroyed, but
+  // 'db_' will be accessed in data migration task. To avoid wrong
+  // accessing, data migration task should be stopped before restoring DB
+  WaitNoMigrateProcessing();
+
   // To guarantee work theads don't access DB, we should relase 'ExclusivityGuard'
   // ASAP to avoid user can't recieve respones for long time, becasue the following
   // 'CloseDB' may cost much time to acquire DB mutex.
@@ -990,6 +1040,16 @@ void Server::PrepareRestoreDB() {
   // actually work.
   LOG(INFO) << "Waiting for closing DB...";
   storage_->CloseDB();
+}
+
+void Server::WaitNoMigrateProcessing() {
+  if (config_->cluster_enabled) {
+    LOG(INFO) << "Waiting until no migration task is running...";
+    slot_migrate_->SetMigrateStopFlag(true);
+    while (slot_migrate_->GetMigrateStateMachine() != MigrateStateMachine::kSlotMigrateNone) {
+      usleep(500);
+    }
+  }
 }
 
 Status Server::AsyncCompactDB(const std::string &begin_key, const std::string &end_key) {

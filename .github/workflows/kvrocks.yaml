@@ -1,13 +1,40 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
 name: kvrocks ci actions  # don't edit while the badge was depend on this
 
 on: [push, pull_request]
 
 jobs:
+  license:
+    name: Check license header
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: apache/skywalking-eyes@main
+        with:
+          config: tools/ci/licenserc.yml
+
   lint-build-test-on-ubuntu:
     strategy:
       matrix:
         os: [ubuntu-18.04]
     runs-on: ${{ matrix.os }}
+    needs: [license]
     steps:
       - name: Checkout Code Base
         uses: actions/checkout@v2.3.4
@@ -21,26 +48,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cppcheck
           sudo pip install cpplint==1.5.0
-          sudo apt-get install -y tar libsnappy-dev
+          sudo apt-get install -y tar cmake
           mkdir build
 
       - name: Lint
         run: |
-          make lint
+          ./cpplint.sh
+          ./cppcheck.sh
 
       - name: Build
         run: |
+          cd build
+          cmake ..
           make -j4
-          cp src/kvrocks build/kvrocks
+          cd ..
 
       - name: Unit Test
         run: |
-          wget https://github.com/google/googletest/archive/release-1.8.1.tar.gz
-          tar -zxvf release-1.8.1.tar.gz
-          cd googletest-release-1.8.1/
-          cmake CMakeLists.txt
-          make && sudo make install && cd -
-          make test
+          ./build/unittest
 
       - name: Redis Tcl Test
         run: |
@@ -54,6 +79,7 @@ jobs:
 
   build-on-macos-latest:
     runs-on: macos-11
+    needs: [license]
     steps:
       - name: Checkout Code Base
         uses: actions/checkout@v2.3.4
@@ -62,8 +88,11 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          brew install snappy googletest gcc autoconf automake libtool
+          brew install gcc autoconf automake libtool cmake
           mkdir build
 
       - name: Build
-        run: make -j4
+        run: |
+          cd build
+          cmake ..
+          make -j4
